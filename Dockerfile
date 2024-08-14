@@ -85,7 +85,7 @@ RUN sudo apt-get update -y && sudo apt-get upgrade -y && sudo DEBIAN_FRONTEND=no
 WORKDIR /app
 
 # Copy files to workdir and change permissions.
-COPY . /app
+COPY requirements.txt /app
 
 # Install specific packages using pip
 RUN pip install -U pip
@@ -97,6 +97,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN yes | pip uninstall onnxruntime-rocm numpy
 RUN pip3 install --no-cache-dir https://repo.radeon.com/rocm/manylinux/rocm-rel-6.1.3/onnxruntime_rocm-1.17.0-cp310-cp310-linux_x86_64.whl numpy==1.26.4
 RUN pip install --no-cache-dir --force-reinstall --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm6.1/
+
+COPY . /app
 
 # Port to expose
 EXPOSE 7860

@@ -1,12 +1,11 @@
 # pipx install insanely-fast-whisper --force --pip-args="--ignore-requires-python" soundfile keyboard
 import gradio as gr
 import speech_recognition as sr
-from modules import shared
 import torch
 import numpy as np
 import keyboard
 
-import time, torch
+import time
 from transformers import pipeline, file_utils
 from transformers.utils import is_flash_attn_2_available
 
@@ -14,10 +13,53 @@ from pydub import AudioSegment
 import os
 import soundfile as sf
 import onnxruntime as ort 
+from dotenv import load_dotenv
+import shutil
+
 ort.set_default_logger_severity(3) # remove warning
-# Load Silero VAD
-model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=True, onnx=True)
-(get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Path to the directory where the Silero VAD model will be stored
+model_dir = os.getenv("SILERO_VAD_MODEL_DIR")  # INPUT_REQUIRED {path to store Silero VAD model}
+
+if not model_dir:
+    raise ValueError("SILERO_VAD_MODEL_DIR environment variable is not set in .env file.")
+
+# Ensure the model directory exists
+if not os.path.exists(model_dir):
+    os.makedirs(model_dir)
+
+model_file = os.path.join(model_dir, "silero_vad.onnx")
+
+# Download the Silero VAD model if it doesn't exist
+if not os.path.exists(model_file):
+    print(f"Downloading Silero VAD model to {model_dir}...")
+    torch.hub.download_url_to_file('https://models.silero.ai/models/vad/silero_vad.onnx', model_file)
+    # Assuming the utils file is also needed
+    shutil.copyfile(
+        torch.hub.get_dir() + '/snakers4_silero-vad_master/files/vad_utils.py', 
+        os.path.join(model_dir, 'vad_utils.py')
+    )
+else:
+    print(f"Silero VAD model already exists in {model_dir}.")
+
+# Import the utils from the downloaded file
+import importlib.util
+spec = importlib.util.spec_from_file_location("vad_utils", os.path.join(model_dir, "vad_utils.py"))
+vad_utils = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(vad_utils)
+
+# Load Silero VAD model and utilities
+model = torch.jit.load(model_file)
+(get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = (
+    vad_utils.get_speech_timestamps, 
+    vad_utils.save_audio, 
+    vad_utils.read_audio, 
+    vad_utils.VADIterator, 
+    vad_utils.collect_chunks
+)
 vad_iterator = VADIterator(model)
 
 input_hijack = {
@@ -67,14 +109,12 @@ def insanely_fast_whisper(audio_data):
         chunk_length_s=30,
         batch_size=24,
         return_timestamps=True,
-    #    generate_kwargs={"language": "en", "task": "transcribe", "num_beams": 5},
     )
     elapsed_time = time.time() - start_time
     print(f"Elapsed time: {elapsed_time} seconds")
 
     last_output = output['text']
     return output['text']
-
 
 directory = os.path.dirname(os.path.realpath(__file__))
 filename_voice = os.path.join(directory, 'temp_voice.wav')
@@ -100,34 +140,40 @@ def do_stt(audio):
 def generate_transcribe():
     keyboard.send("enter")
 
-def auto_transcribe(audio, auto_submit):
+def auto_transcribe(file_path, auto_submit):
     global last_output, previous_state
-    if audio is None:
-        return "", ""
+    audio, sample_rate = sf.read(file_path)
+    audio = (sample_rate, audio)
+
     if not is_silence(audio):
         transcription = do_stt(audio)
-        # print("Talking...")
         previous_state = "talking"
     else:
-        # print("silence")
         transcription = ""
         if previous_state == "talking":
             generate_transcribe()
             transcription = last_output
-            pass
         last_output = ""
         previous_state = "silence"
-        audio_data = sr.AudioData(sample_rate=audio[0], frame_data=audio[1], sample_width=4)
-        sf.write(filename_voice, audio_data.frame_data, audio_data.sample_rate)
+        sf.write(filename_voice, audio[1], audio[0])
     if auto_submit:
         input_hijack.update({"state": True, "value": [transcription, transcription]})
     return transcription, None
 
 def ui():
-    with gr.Row():
-        audio = gr.Audio(source="microphone", streaming=True)
-        auto_submit = gr.Checkbox(label='Submit the transcribed audio automatically', value=True, visible=False)
+    with gr.Blocks() as demo:
+        with gr.Row():
+            upload_button = gr.UploadButton(label="Upload Audio File", file_types=["audio"], file_count="single")
+            auto_submit = gr.Checkbox(label='Submit the transcribed audio automatically', value=True, visible=False)
+            text_box = gr.Textbox(label="Transcription Output")
 
-    audio.change(
-        auto_transcribe, [audio, auto_submit], [shared.gradio['textbox'], audio]).then(
-        None, auto_submit, None, _js="(False) => { console.log('Check:', check); if (check) { document.getElementById('Generate').click(); }}");
+        upload_button.upload(
+            auto_transcribe, [upload_button, auto_submit], [text_box]
+        ).then(
+            None, auto_submit, None, _js="(False) => { console.log('Check:', check); if (check) { document.getElementById('Generate').click(); }}"
+        )
+        
+        demo.launch()
+
+# Launch the Gradio interface
+ui()
