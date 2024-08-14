@@ -2,6 +2,7 @@
 import gradio as gr
 import speech_recognition as sr
 import torch
+import torchaudio
 import numpy as np
 import keyboard
 
@@ -40,18 +41,33 @@ buffer = np.array([])
 
 def is_silence(audio):
     global buffer
-    sample_rate, frame_data = audio # Separate the sample rate and frame data
-    window_size_samples = 512 # Number of samples in a single audio chunk
-    speech_chunks = 0 # Counter for chunks detected as speech
+    sample_rate, frame_data = audio  # Separate the sample rate and frame data
+    window_size_samples = 512  # Number of samples in a single audio chunk
+    speech_chunks = 0  # Counter for chunks detected as speech
+
+    # Resample audio if necessary
+    if sample_rate not in [8000, 16000]:
+        resample_rate = 16000  # Choose 16000 as a standard resample rate
+        resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=resample_rate)
+        frame_data = resampler(torch.tensor(frame_data).float())
+        sample_rate = resample_rate
+
+    # Ensure buffer is initialized correctly with the same number of dimensions as frame_data
+    if buffer.size == 0:  # If buffer is empty
+        buffer = np.zeros((0, frame_data.shape[1])) if frame_data.ndim == 2 else np.zeros(0)
 
     for i in range(0, len(frame_data), window_size_samples):
-        chunk = frame_data[i: i+window_size_samples]
-        buffer = np.concatenate((buffer[-2*window_size_samples:], chunk)) # Keep only the last 3 chunks in the buffer
-        if len(buffer) < 3*window_size_samples: # If less than 3 chunks in buffer, continue to next iteration
+        chunk = frame_data[i: i + window_size_samples]
+        if chunk.ndim == 1:
+            chunk = np.expand_dims(chunk, axis=-1)  # Convert chunk to 2D if it is 1D
+
+        buffer = np.concatenate((buffer[-2 * window_size_samples:], chunk), axis=0)  # Concatenate along the correct axis
+
+        if len(buffer) < 3 * window_size_samples:  # If less than 3 chunks in buffer, continue to next iteration
             continue
 
-        buffer_tensor = torch.from_numpy(buffer).float() # Convert buffer to a PyTorch tensor and then to float
-        speech_prob = model(buffer_tensor, sample_rate).item() # Calculate speech probability for the buffer
+        buffer_tensor = torch.from_numpy(buffer).float()  # Convert buffer to a PyTorch tensor and then to float
+        speech_prob = model(buffer_tensor, sample_rate).item()  # Calculate speech probability for the buffer
         if speech_prob > 0.9:
             speech_chunks += 1
             if speech_chunks >= 2:
