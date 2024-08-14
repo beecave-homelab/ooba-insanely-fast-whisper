@@ -14,52 +14,19 @@ import os
 import soundfile as sf
 import onnxruntime as ort 
 from dotenv import load_dotenv
-import shutil
 
 ort.set_default_logger_severity(3) # remove warning
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Path to the directory where the Silero VAD model will be stored
-model_dir = os.getenv("SILERO_VAD_MODEL_DIR")  # INPUT_REQUIRED {path to store Silero VAD model}
-
-if not model_dir:
-    raise ValueError("SILERO_VAD_MODEL_DIR environment variable is not set in .env file.")
-
-# Ensure the model directory exists
-if not os.path.exists(model_dir):
-    os.makedirs(model_dir)
-
-model_file = os.path.join(model_dir, "silero_vad.onnx")
-
-# Download the Silero VAD model if it doesn't exist
-if not os.path.exists(model_file):
-    print(f"Downloading Silero VAD model to {model_dir}...")
-    torch.hub.download_url_to_file('https://models.silero.ai/models/vad/silero_vad.onnx', model_file)
-    # Assuming the utils file is also needed
-    shutil.copyfile(
-        torch.hub.get_dir() + '/snakers4_silero-vad_master/files/vad_utils.py', 
-        os.path.join(model_dir, 'vad_utils.py')
-    )
-else:
-    print(f"Silero VAD model already exists in {model_dir}.")
-
-# Import the utils from the downloaded file
-import importlib.util
-spec = importlib.util.spec_from_file_location("vad_utils", os.path.join(model_dir, "vad_utils.py"))
-vad_utils = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(vad_utils)
+# Set the TORCH_HOME environment variable from .env or use default
+torch_home = os.getenv("TORCH_HOME", "models")
+os.environ['TORCH_HOME'] = torch_home
 
 # Load Silero VAD model and utilities
-model = torch.jit.load(model_file)
-(get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = (
-    vad_utils.get_speech_timestamps, 
-    vad_utils.save_audio, 
-    vad_utils.read_audio, 
-    vad_utils.VADIterator, 
-    vad_utils.collect_chunks
-)
+model, utils = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', force_reload=True, onnx=True)
+(get_speech_timestamps, save_audio, read_audio, VADIterator, collect_chunks) = utils
 vad_iterator = VADIterator(model)
 
 input_hijack = {
@@ -170,7 +137,7 @@ def ui():
         upload_button.upload(
             auto_transcribe, [upload_button, auto_submit], [text_box]
         ).then(
-            None, auto_submit, None, _js="(False) => { console.log('Check:', check); if (check) { document.getElementById('Generate').click(); }}"
+            None, auto_submit, None, js="(False) => { console.log('Check:', check); if (check) { document.getElementById('Generate').click(); }}"
         )
         
         demo.launch()
